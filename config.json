@@ -1,0 +1,14 @@
+{
+  "whisper_model": "tiny",
+  "whisper_device": "cpu",
+  "whisper_compute": "int8",
+  "llm_base": "https://api.deepseek.com/v1",
+  "llm_key": "sk-7aefdfef290d411bb875cacf3991afe3",
+  "llm_model": "deepseek-chat",
+  "image_api_key": "sk-ws-H.REMXHRX.DSlQ.MEUCIBMJbj0uwggu26kd-5LRukhDOENJKR3pb6gEeGzikCMJAiEAysIUN6KIWbiGmYyJMxC4qVzf8bdOohrO4h07-n9_2EA",
+  "image_model": "wan2.6-t2i",
+  "image_edit_model": "wan2.6-image",
+  "image_size": "1280*1280",
+  "canvas_width": 960,
+  "canvas_height": 540
+}

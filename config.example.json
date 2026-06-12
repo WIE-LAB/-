@@ -1,0 +1,14 @@
+{
+  "whisper_model": "tiny",
+  "whisper_device": "cpu",
+  "whisper_compute": "int8",
+  "llm_base": "https://api.deepseek.com/v1",
+  "llm_key": "在此填写你的 DeepSeek API Key",
+  "llm_model": "deepseek-chat",
+  "image_api_key": "在此填写你的阿里云百炼 API Key",
+  "image_model": "wan2.6-t2i",
+  "image_edit_model": "wan2.6-image",
+  "image_size": "1280*1280",
+  "canvas_width": 960,
+  "canvas_height": 540
+}

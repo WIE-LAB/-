@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>语音绘图 · VoicePaint Web</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">🎨</div>
+        <div>
+          <div class="title">VoicePaint</div>
+          <div class="subtitle">纯语音 · AI 绘图</div>
+        </div>
+      </div>
+      <div class="status-pill">
+        <span id="mic-indicator" class="mic-dot off"></span>
+        <span id="status-text">就绪</span>
+      </div>
+      <div class="topbar-actions">
+        <button id="help-btn" class="ghost-btn">帮助</button>
+      </div>
+    </header>
+
+    <main class="main">
+      <section class="canvas-section">
+        <div class="canvas-frame">
+          <canvas id="board" width="960" height="540"></canvas>
+          <div id="interim" class="interim hidden"></div>
+          <div id="loading-overlay" class="loading-overlay hidden">
+            <div class="spinner"></div>
+            <span id="loading-text">AI 思考中…</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="sidebar">
+        <div class="panel mic-panel">
+          <button id="mic-btn" class="mic-btn" type="button">
+            <span class="mic-ring"></span>
+            <span class="mic-icon">🎤</span>
+            <span class="mic-label">开始聆听</span>
+          </button>
+          <p class="hint">纯语音绘图 · 阿里云识别 · 说完稍停 1 秒</p>
+          <div id="mic-status" class="mic-status">点击上方按钮开始</div>
+          <div id="volume-bar" class="volume-bar"><div id="volume-fill"></div></div>
+        </div>
+
+        <div class="panel">
+          <h3>识别 / 理解</h3>
+          <div class="nlu-grid">
+            <div class="nlu-row"><span class="label">听到</span><span id="heard" class="value">—</span></div>
+            <div class="nlu-row"><span class="label">理解为</span><span id="parsed" class="value">—</span></div>
+            <div class="nlu-row"><span class="label">来源</span><span id="source" class="badge">—</span></div>
+          </div>
+        </div>
+
+        <div class="panel grow">
+          <h3>对话</h3>
+          <div id="log" class="log"></div>
+        </div>
+
+        <div class="panel input-panel">
+          <div class="input-row">
+            <input id="text-input" type="text" placeholder="也可打字：画一只可爱的猫…" autocomplete="off" />
+            <button id="send-btn" class="send-btn" type="button">发送</button>
+          </div>
+        </div>
+      </aside>
+    </main>
+
+    <div id="help-modal" class="modal hidden">
+      <div class="modal-card">
+        <h2>可以这样说</h2>
+        <ul class="help-list">
+          <li><strong>AI 创作</strong>画一只可爱的小猫 / 画春天的风景 / 画一辆红色小汽车</li>
+          <li><strong>对话改图</strong>给猫戴顶帽子 / 把背景换成星空 / 让它躺下来</li>
+          <li><strong>简单图形</strong>画一个红色的圆 / 画三个蓝色方块排成一行</li>
+          <li><strong>编辑</strong>移到右边 / 放大一点 / 撤销 / 清空画布</li>
+          <li><strong>复合</strong>先清空画布，然后画一棵大树</li>
+          <li><strong>提示</strong>说完稍停 1 秒；请用 Edge 或 Chrome 并允许麦克风</li>
+        </ul>
+        <button id="help-close" class="primary-btn">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
