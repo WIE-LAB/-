@@ -20,9 +20,10 @@ export class Executor {
     this._batchSummary = '';
   }
 
-  enqueue(commands, { summary = '', silent = false } = {}) {
+  enqueue(commands, { summary = '', silent = false, confirm = true } = {}) {
     this._batchSummary = summary;
     this._silent = silent;
+    this._noConfirm = !confirm;
     const merged = [];
     let buf = [];
     for (const cmd of commands) {
@@ -34,7 +35,7 @@ export class Executor {
     }
     if (buf.length) merged.push({ action: '_place_batch', items: buf });
     this.queue.push(...merged);
-    this.drain();
+    return this.drain();
   }
 
   async drain() {
@@ -119,18 +120,8 @@ export class Executor {
         break;
       }
       case 'clear': {
-        if (this.confirmDestructive && e.shapes.length) {
-          this.pendingConfirm = {
-            run: () => {
-              const ok = e.clear();
-              this._fb({ ok, text: ok ? '画布已清空。' : '画布本来就是空的。', level: 'bot' });
-            },
-          };
-          this._fb({ ok: true, text: '确定清空画布吗？说「确认」或「取消」。', level: 'warn' });
-        } else {
-          const ok = e.clear();
-          this._fb({ ok, text: ok ? '画布已清空。' : '画布本来就是空的。', level: 'bot' });
-        }
+        const ok = e.clear();
+        this._fb({ ok, text: ok ? '画布已清空。' : '画布本来就是空的。', level: 'bot' });
         break;
       }
       case 'undo':
@@ -157,6 +148,17 @@ export class Executor {
       case 'text':
         e.addText({ text: cmd.text, color: cmd.color, position: cmd.position, size: cmd.size });
         if (!this._silent) this._fb({ ok: true, text: `已写上「${cmd.text}」。`, level: 'bot' });
+        break;
+      case 'export':
+      case 'export_canvas':
+      case 'save':
+        this._fb({
+          ok: e.exportCanvas(cmd.filename),
+          text: e.shapes.length
+            ? '画布已导出，请到浏览器下载文件夹查看。'
+            : '画布是空的，没有可导出的内容。',
+          level: e.shapes.length ? 'bot' : 'warn',
+        });
         break;
       default:
         this._fb({ ok: false, text: '指令未识别。', level: 'warn' });

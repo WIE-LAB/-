@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from starlette.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .config import AppConfig
@@ -19,6 +19,7 @@ from .image_gen import (
     image_edit_enabled,
     image_gen_enabled,
 )
+from .paint_stages import make_stages
 from .whisper_service import is_whisper_ready, preload_whisper, transcribe_upload, whisper_status
 
 from .nlu.llm import llm_enabled, parse_with_llm
@@ -57,6 +58,7 @@ class ChatRequest(BaseModel):
 
 class ImageRequest(BaseModel):
     prompt: str
+    staged: bool = True
 
 
 class EditRequest(BaseModel):
@@ -142,7 +144,14 @@ def api_generate_image(req: ImageRequest) -> dict:
     path, err = generate_image(req.prompt.strip(), cfg)
     if err or not path:
         raise HTTPException(502, err or "生成失败")
-    return {"url": f"/api/images/{path.name}"}
+    url = f"/api/images/{path.name}"
+    stages: list[str] = []
+    if req.staged:
+        try:
+            stages = [f"/api/images/{n}" for n in make_stages(path)]
+        except Exception:
+            stages = []
+    return {"url": url, "stages": stages}
 
 
 @app.post("/api/edit-image")
@@ -173,12 +182,28 @@ def api_serve_image(name: str) -> FileResponse:
     return FileResponse(path, media_type=mime or "image/png")
 
 
+_NOCACHE = "no-cache, no-store, must-revalidate"
+
+
+class DevStaticFiles(StaticFiles):
+    """开发期禁用 JS/CSS/HTML 强缓存，避免模块版本不一致。"""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if path.endswith((".js", ".html", ".css")):
+            response.headers["Cache-Control"] = _NOCACHE
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+    r = FileResponse(WEB_DIR / "index.html")
+    r.headers["Cache-Control"] = _NOCACHE
+    return r
 
 
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+app.mount("/static", DevStaticFiles(directory=WEB_DIR), name="static")
 
 
 def main() -> None:

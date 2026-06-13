@@ -23,7 +23,8 @@
         <span id="status-text">就绪</span>
       </div>
       <div class="topbar-actions">
-        <button id="help-btn" class="ghost-btn">帮助</button>
+        <button id="export-btn" class="ghost-btn" type="button" title="导出画布为 PNG">导出</button>
+        <button id="help-btn" class="ghost-btn" type="button">帮助</button>
       </div>
     </header>
 
@@ -46,8 +47,8 @@
             <span class="mic-icon">🎤</span>
             <span class="mic-label">开始聆听</span>
           </button>
-          <p class="hint">纯语音绘图 · 阿里云识别 · 说完稍停 1 秒</p>
-          <div id="mic-status" class="mic-status">点击上方按钮开始</div>
+          <p class="hint">纯语音绘图 · 浏览器识别（快速）· 云端备用</p>
+          <div id="mic-status" class="mic-status">点击「开始聆听」后说话</div>
           <div id="volume-bar" class="volume-bar"><div id="volume-fill"></div></div>
         </div>
 
@@ -78,10 +79,11 @@
       <div class="modal-card">
         <h2>可以这样说</h2>
         <ul class="help-list">
-          <li><strong>AI 创作</strong>画一只可爱的小猫 / 画春天的风景 / 画一辆红色小汽车</li>
+          <li><strong>AI 创作</strong>画一只可爱的小猫（起稿 → 铺色 → 细节，分阶段画出）</li>
           <li><strong>对话改图</strong>给猫戴顶帽子 / 把背景换成星空 / 让它躺下来</li>
           <li><strong>简单图形</strong>画一个红色的圆 / 画三个蓝色方块排成一行</li>
           <li><strong>编辑</strong>移到右边 / 放大一点 / 撤销 / 清空画布</li>
+          <li><strong>导出</strong>保存图片 / 导出画布（也可点右上角「导出」按钮）</li>
           <li><strong>复合</strong>先清空画布，然后画一棵大树</li>
           <li><strong>提示</strong>说完稍停 1 秒；请用 Edge 或 Chrome 并允许麦克风</li>
         </ul>
@@ -90,6 +92,35 @@
     </div>
   </div>
 
-  <script type="module" src="/static/js/app.js"></script>
+  <script type="module">
+    const log = document.getElementById('log');
+    const micStatus = document.getElementById('mic-status');
+    const showBootError = (msg) => {
+      if (log) {
+        log.innerHTML = `<div class="log-item warn"><span class="who">提示</span>${msg}</div>`;
+      }
+      if (micStatus) micStatus.textContent = '页面未加载完成，请查看下方提示';
+    };
+
+    try {
+      const res = await fetch('/api/status', { signal: AbortSignal.timeout(4000) });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+    } catch (_) {
+      showBootError(
+        '无法连接后端服务。请先双击运行 <strong>run_web.bat</strong>，'
+        + '等黑窗口出现「打开: http://127.0.0.1:8765」后再刷新本页（Ctrl+F5）。'
+      );
+    }
+
+    try {
+      await import('/static/js/app.js?v=8');
+    } catch (e) {
+      showBootError(
+        '前端脚本加载失败：' + (e?.message || e)
+        + '。请确认 run_web.bat 正在运行，并 Ctrl+F5 强制刷新。'
+      );
+      console.error(e);
+    }
+  </script>
 </body>
 </html>

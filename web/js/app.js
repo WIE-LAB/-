@@ -1,7 +1,7 @@
-import { Engine } from './engine.js';
-import { Executor } from './executor.js';
-import { ServerASR } from './recorder.js';
-import { TTS } from './speech.js';
+import { Engine } from './engine.js?v=8';
+import { Executor } from './executor.js?v=8';
+import { ServerASR } from './recorder.js?v=8';
+import { HybridASR, TTS } from './speech.js?v=8';
 
 const $ = (id) => document.getElementById(id);
 
@@ -45,9 +45,18 @@ function addLog(text, who = 'bot') {
   dom.log.scrollTop = dom.log.scrollHeight;
 }
 
-function handleFeedback(fb) {
+async function handleFeedback(fb) {
   addLog(fb.text, fb.level === 'warn' ? 'warn' : 'bot');
-  tts.speak(fb.text);
+  asr.pauseForPlayback();
+  await tts.speak(fb.text);
+  if (asr.wantsListen) asr.resumeAfterPlayback();
+}
+
+function shouldIgnoreHeard(text) {
+  if (!text) return true;
+  if (processing || tts.speaking) return true;
+  if (tts.isEcho(text)) return true;
+  return false;
 }
 
 function setStatus(text) { dom.statusText.textContent = text; }
@@ -78,11 +87,9 @@ async function fetchStatus() {
     serverStatus = await res.json();
     if (serverStatus.llm) addLog('AI 大脑已连接，可以说任意绘图指令。', 'bot');
     if (serverStatus.image) addLog('通义万相已启用：说「画一只猫」生成图片，再说「给猫戴顶帽子」可在原图上修改。', 'bot');
+    addLog('语音识别：优先使用浏览器原生（快速），不可用时自动切云端。', 'bot');
     if (!serverStatus.asr_ready) {
-      const hint = serverStatus.asr_engine === 'cloud'
-        ? '正在连接阿里云语音识别…'
-        : 'Whisper 模型加载中（首次约 1 分钟）…';
-      addLog(hint, 'bot');
+      addLog('云端识别备用通道加载中…', 'bot');
     }
   } catch {
     addLog('无法连接后端，请运行 run_web.bat 启动服务。', 'warn');
@@ -90,21 +97,18 @@ async function fetchStatus() {
 }
 
 function updateAsrState() {
-  asr.whisperReady = !!serverStatus.whisper_ready;
-  asr.asrReady = !!serverStatus.asr_ready;
-  if (serverStatus.asr_ready) {
-    if (!asrLoggedReady) {
-      const name = serverStatus.asr_engine === 'cloud' ? '阿里云语音识别' : 'Whisper';
-      addLog(`${name}已就绪！可以开始聆听。`, 'bot');
-      asrLoggedReady = true;
-    }
-    if (dom.micStatus && !asr.listening) {
-      dom.micStatus.textContent = '语音识别已就绪，点击「开始聆听」';
-    }
-  } else if (dom.micStatus && !asr.listening) {
-    dom.micStatus.textContent = serverStatus.asr_engine === 'cloud'
-      ? '连接语音识别中…'
-      : `Whisper 加载中…（${serverStatus.whisper || '请稍候'}）`;
+  asr.setServerReady({
+    asr_ready: serverStatus.asr_ready,
+    whisper_ready: serverStatus.whisper_ready,
+  });
+  if (!asrLoggedReady) {
+    addLog('点击「开始聆听」，直接说「画一只猫」等指令。', 'bot');
+    asrLoggedReady = true;
+  }
+  if (dom.micStatus && !asr.listening) {
+    dom.micStatus.textContent = asr.mode === 'browser'
+      ? '浏览器语音识别 · 点击「开始聆听」'
+      : (serverStatus.asr_ready ? '云端识别已就绪' : '云端识别加载中…');
   }
 }
 
@@ -141,7 +145,7 @@ async function callGenerateImage(prompt) {
   const res = await fetch('/api/generate-image', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, staged: true }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -175,15 +179,25 @@ async function drawStrokeSequence(strokeCmds) {
 
 async function handleUtterance(text) {
   text = text.trim();
-  if (!text || processing) return;
+  if (shouldIgnoreHeard(text)) return;
 
   dom.heard.textContent = text;
   addLog(text, 'user');
 
   const norm = text.replace(/[，。\s]/g, '');
+  if (/^(保存|导出|下载)(图片|画布|作品|这幅画)?$/.test(norm)) {
+    const ok = engine.exportCanvas();
+    await handleFeedback({
+      text: ok
+        ? (engine.shapes.length ? '画布已导出，请到下载文件夹查看。' : '画布是空的。')
+        : '导出失败，请重试。',
+      level: ok && engine.shapes.length ? 'bot' : 'warn',
+    });
+    return;
+  }
   if (/^(帮助|帮助一下|有什么指令|能做什么)$/.test(norm)) {
     openHelp();
-    handleFeedback({ text: '已打开帮助。', level: 'bot' });
+    await handleFeedback({ text: '已打开帮助。', level: 'bot' });
     return;
   }
 
@@ -198,6 +212,7 @@ async function handleUtterance(text) {
   }
 
   processing = true;
+  asr.pauseForPlayback();
   showLoading('AI 理解中…');
   setStatus('AI 思考中…');
   setSource('llm');
@@ -219,17 +234,13 @@ async function handleUtterance(text) {
       else if (error === 'timeout') msg = 'AI 响应超时，请重试';
       else msg = `AI 出错：${error}`;
       addLog(msg, 'warn');
-      handleFeedback({ text: msg, level: 'warn' });
+      await handleFeedback({ text: msg, level: 'warn' });
       setSource('fail');
-      processing = false;
-      setStatus('就绪');
       return;
     }
 
     if (!commands?.length) {
       addLog('AI 没能理解，请换个说法。', 'warn');
-      processing = false;
-      setStatus('就绪');
       return;
     }
 
@@ -242,10 +253,8 @@ async function handleUtterance(text) {
 
     if (onlyReply) {
       dom.parsed.textContent = commands[0].text || '';
-      handleFeedback({ text: commands[0].text || '', level: 'bot' });
+      await handleFeedback({ text: commands[0].text || '', level: 'bot' });
       chatHistory.push([text, commands[0].text || '']);
-      processing = false;
-      setStatus('聆听中…');
       return;
     }
 
@@ -254,9 +263,10 @@ async function handleUtterance(text) {
         : strokeCmds.length ? '逐笔绘制中…'
         : (imgCmds[0]?.prompt?.slice(0, 40) || '执行指令'));
 
-    // 1) 先执行非绘制类指令（清空 / 撤销 / 移动 / 删除等）
+    // 1) 先执行非绘制类指令（清空 / 撤销 / 移动 / 删除等），直接执行不确认
     if (rest.length) {
-      executor.enqueue(rest, { summary: '', silent: true });
+      const hasDrawing = strokeCmds.length || imgCmds.length || editCmds.length;
+      await executor.enqueue(rest, { summary: '', silent: hasDrawing });
     }
 
     // 2) 一笔一笔画
@@ -266,21 +276,27 @@ async function handleUtterance(text) {
       await drawStrokeSequence(strokeCmds);
     }
 
-    // 3) 文生图：AI 生成真实画作，再一笔笔揭示出来
+    // 3) 文生图：AI 成图 → 分阶段（底稿→色块→成品）逐层画出来
     for (const ic of imgCmds) {
       const prompt = ic.prompt || text;
       showLoading('AI 构思画面中…（约 10~20 秒）');
       setStatus('AI 作画中…');
       setSource('wanx');
       try {
-        const { url } = await callGenerateImage(prompt);
+        const { url, stages } = await callGenerateImage(prompt);
         hideLoading();
-        setStatus('正在一笔笔画出来…');
-        await engine.placeImage({ url, x: ic.x, y: ic.y, w: ic.w, h: ic.h, prompt, animate: true });
+        if (stages?.length) {
+          setStatus('起稿 → 铺色 → 细节…');
+          addLog('分阶段作画：先起底稿，再铺色，最后出细节。', 'bot');
+          await engine.paintStages({ url, stages, x: ic.x, y: ic.y, w: ic.w, h: ic.h, prompt });
+        } else {
+          setStatus('正在展示画面…');
+          await engine.placeImage({ url, x: ic.x, y: ic.y, w: ic.w, h: ic.h, prompt, animate: true });
+        }
       } catch (e) {
         hideLoading();
         addLog('图片生成失败：' + e.message, 'warn');
-        handleFeedback({ text: '图片生成失败：' + e.message, level: 'warn' });
+        await handleFeedback({ text: '图片生成失败：' + e.message, level: 'warn' });
       }
     }
 
@@ -290,7 +306,7 @@ async function handleUtterance(text) {
       const target = engine.lastImage();
       if (!target || !target.url) {
         addLog('画布上还没有图片，先说「画一只猫」再修改。', 'warn');
-        handleFeedback({ text: '画布上还没有图片，先画一张再修改。', level: 'warn' });
+        await handleFeedback({ text: '画布上还没有图片，先画一张再修改。', level: 'warn' });
         break;
       }
       const name = target.url.split('/').pop();
@@ -309,30 +325,45 @@ async function handleUtterance(text) {
       } catch (e) {
         hideLoading();
         addLog('改图失败：' + e.message, 'warn');
-        handleFeedback({ text: '改图失败：' + e.message, level: 'warn' });
+        await handleFeedback({ text: '改图失败：' + e.message, level: 'warn' });
       }
     }
 
-    // 4) 统一反馈
-    const doneMsg = summary || (edited ? '改好了。' : strokeCmds.length ? '画好了。' : (imgCmds.length ? '生成好了。' : '已完成。'));
-    handleFeedback({ text: doneMsg, level: 'bot' });
-    chatHistory.push([text, doneMsg]);
+    // 4) 统一反馈（纯清空/移动等已在 executor 里播报，不重复说「已完成」）
+    const onlyOps = rest.length && !strokeCmds.length && !imgCmds.length && !editCmds.length;
+    if (!onlyOps) {
+      const doneMsg = summary || (edited ? '改好了。' : strokeCmds.length ? '画好了。' : (imgCmds.length ? '生成好了。' : ''));
+      if (doneMsg) {
+        await handleFeedback({ text: doneMsg, level: 'bot' });
+        chatHistory.push([text, doneMsg]);
+      }
+    } else if (summary && !/已完成|完成/.test(summary)) {
+      await handleFeedback({ text: summary, level: 'bot' });
+      chatHistory.push([text, summary]);
+    }
     if (chatHistory.length > 10) chatHistory.shift();
 
   } catch (e) {
     hideLoading();
     addLog('请求失败：' + e.message, 'warn');
-    handleFeedback({ text: '网络错误，请确认 run_web.bat 正在运行。', level: 'warn' });
+    await handleFeedback({ text: '网络错误，请确认 run_web.bat 正在运行。', level: 'warn' });
+  } finally {
+    processing = false;
+    hideLoading();
+    if (asr.wantsListen) asr.resumeAfterPlayback();
+    setStatus(asr.listening ? '聆听中…' : '就绪');
   }
-
-  processing = false;
-  setStatus(asr.listening ? '聆听中…' : '就绪');
 }
 
-// ---------- 语音（浏览器录音 → 服务端 Whisper）----------
-const asr = new ServerASR({
+// ---------- 语音：浏览器原生识别（快） + 云端备用 ----------
+const asr = new HybridASR({
+  onInterim: (t) => {
+    dom.interim.textContent = t;
+    dom.interim.classList.remove('hidden');
+  },
   onFinal: (t) => {
     dom.interim.classList.add('hidden');
+    if (shouldIgnoreHeard(t)) return;
     handleUtterance(t);
   },
   onState: (listening) => {
@@ -341,7 +372,13 @@ const asr = new ServerASR({
     dom.micBtn.classList.toggle('listening', listening);
     dom.micBtn.querySelector('.mic-label').textContent = listening ? '停止聆听' : '开始聆听';
     if (!processing) setStatus(listening ? '聆听中…' : '就绪');
-    if (!listening) dom.volumeFill.style.width = '0%';
+    if (!listening) {
+      dom.interim.classList.add('hidden');
+      dom.volumeFill.style.width = '0%';
+      if (dom.micStatus) dom.micStatus.textContent = '点击「开始聆听」后说话';
+    } else if (dom.micStatus) {
+      dom.micStatus.textContent = '正在聆听，说完自动识别';
+    }
   },
   onLevel: (level) => {
     dom.volumeFill.style.width = Math.round(level * 100) + '%';
@@ -352,22 +389,20 @@ const asr = new ServerASR({
   onStatus: (msg) => {
     if (dom.micStatus) dom.micStatus.textContent = msg;
     if (msg.includes('识别中')) {
-      dom.interim.textContent = '语音识别中…';
+      dom.interim.textContent = '云端识别中…';
       dom.interim.classList.remove('hidden');
-    } else {
-      dom.interim.classList.add('hidden');
     }
   },
   onError: (code, msg) => {
     if (code === 'not-allowed') {
       setStatus('麦克风被拒绝');
-      addLog(msg, 'warn');
-    } else {
-      addLog('语音识别：' + msg, 'warn');
-      if (dom.micStatus) dom.micStatus.textContent = msg;
+      addLog(msg || '请在浏览器地址栏允许麦克风。', 'warn');
+    } else if (code !== 'browser-fallback') {
+      addLog('语音识别：' + (msg || code), 'warn');
     }
   },
 });
+asr.attachServer(ServerASR);
 
 if (!asr.supported) {
   setStatus('浏览器不支持麦克风');
@@ -385,13 +420,28 @@ dom.textInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') dom.sendBtn.click();
 });
 
+async function exportCanvas() {
+  const ok = engine.exportCanvas();
+  const msg = ok
+    ? (engine.shapes.length ? '画布已导出，请到下载文件夹查看。' : '画布是空的，没有可导出的内容。')
+    : '导出失败，请重试。';
+  await handleFeedback({ text: msg, level: ok && engine.shapes.length ? 'bot' : 'warn' });
+}
+
 function openHelp() { $('help-modal').classList.remove('hidden'); }
 $('help-btn').addEventListener('click', openHelp);
+$('export-btn').addEventListener('click', exportCanvas);
 $('help-close').addEventListener('click', () => $('help-modal').classList.add('hidden'));
 
-fetchStatus().then(() => {
-  updateAsrState();
-  if (!serverStatus.asr_ready) pollAsrReady();
-});
-addLog('大声说话、说完稍停 1 秒。环境杂音不会误触发。', 'bot');
-setStatus('就绪');
+async function boot() {
+  setStatus('就绪');
+  try {
+    await fetchStatus();
+    updateAsrState();
+    if (!serverStatus.asr_ready) pollAsrReady();
+  } catch (e) {
+    addLog('无法连接后端，请运行 run_web.bat 后刷新页面。', 'warn');
+    setStatus('未连接服务');
+  }
+}
+boot();

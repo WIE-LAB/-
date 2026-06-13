@@ -134,7 +134,7 @@ export class ServerASR {
 
     if (!this._calibrated) {
       this._noiseSamples.push(rms);
-      if (this._noiseSamples.length >= 22) {
+      if (this._noiseSamples.length >= 10) {
         const sorted = [...this._noiseSamples].sort((a, b) => a - b);
         const floor = sorted[Math.floor(sorted.length * 0.7)];
         this._threshold = Math.max(0.028, floor * 5.0);
@@ -153,7 +153,7 @@ export class ServerASR {
       this._pendingMs += 16;
       this._silenceMs = 0;
       // 需连续 350ms 超阈值才开始录音，过滤风吹草动
-      if (!this._recording && this._pendingMs >= 350) {
+      if (!this._recording && this._pendingMs >= 200) {
         this._recording = true;
         this._chunks = [];
         this._speechMs = 0;
@@ -170,7 +170,7 @@ export class ServerASR {
       this._pendingMs = 0;
       if (this._recording) {
         this._silenceMs += 16;
-        if (this._silenceMs >= 600) {
+        if (this._silenceMs >= 400) {
           this._finishRecording();
         }
       }
@@ -199,10 +199,10 @@ export class ServerASR {
   async _onRecorded() {
     const spokeMs = this._lastSpeechMs;
     this._lastSpeechMs = 0;
-    this._cooldownUntil = Date.now() + 700;
+    this._cooldownUntil = Date.now() + 350;
 
     if (this._uploading) return;
-    if (spokeMs < 700) {
+    if (spokeMs < 450) {
       this._chunks = [];
       if (this.listening) this.onStatus('没听清（太短），请大声说一句完整的话');
       return;
@@ -226,8 +226,8 @@ export class ServerASR {
 
     try {
       const fd = new FormData();
-      const wavBlob = await this._toWav(blob);
-      fd.append('file', wavBlob, 'speech.wav');
+      const isWebm = (blob.type || '').includes('webm');
+      fd.append('file', blob, isWebm ? 'speech.webm' : 'speech.wav');
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 60000);
       const res = await fetch('/api/transcribe', { method: 'POST', body: fd, signal: ctrl.signal });

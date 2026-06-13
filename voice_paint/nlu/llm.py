@@ -38,11 +38,21 @@ SYSTEM_PROMPT = """你是语音绘图 AI。画布 {width}x{height}px，原点左
 
 ## 其他指令
 - place: {"action":"place","shape":"circle|rect|triangle|line|star|heart","x":int,"y":int,"size":int,"color":"red"} 单个几何图形
-- move_group: {"action":"move_group","color":"red","dx":150,"dy":0} 移动该颜色所有内容（整组移动）
-- move: {"action":"move","color":"red","dx":100,"dy":0} 同 move_group
-- delete: {"action":"delete","color":"red"} 删除该颜色
-- clear/undo/redo/recolor/resize/text 等同理
+- move: {"action":"move","dx":150,"dy":0} 平移；也可用 position（left/right/top/bottom/center/top-left…）
+- move_group: {"action":"move_group","color":"red","dx":150,"dy":0} 按颜色移动整组（仅用于彩色几何图形）
+- delete: {"action":"delete"} 删除目标
+- resize: {"action":"resize","factor":1.5} 放大缩小；factor>1 放大，<1 缩小
+- clear/undo/redo/recolor/text 等同理
+- export: {"action":"export"} 保存/导出当前画布为 PNG（「保存图片」「导出画布」「下载作品」等）
 - reply: 仅纯聊天时用
+
+## 操作画布上的「图片」（重点！）
+AI 生成的画是「图片」对象，**没有颜色**。当用户要移动/缩放/删除画布上那张画（说"它/这张/这幅/图/小猫/把画…"）时：
+- 必须加 `"target":"image"`，**绝对不要写 color 字段**（图片没有颜色，写 color 会找不到目标）。
+- 移动：{"action":"move","target":"image","dx":200,"dy":0} 或 {"action":"move","target":"image","position":"right"}
+- 缩放：{"action":"resize","target":"image","factor":1.4}
+- 删除：{"action":"delete","target":"image"}
+- 注意：移动图片用 move（不是 move_group）。
 
 {image_instructions}
 
@@ -50,17 +60,23 @@ SYSTEM_PROMPT = """你是语音绘图 AI。画布 {width}x{height}px，原点左
 1. commands 不能为空！必须给出可执行指令。
 2. 「画一只猫/树/房子/风景…」等创作 → 默认用 generate_image 生成真实画作，不要用 stroke 或 place 拼几何（那样很丑）。
 2b. 画布已有图片、用户想在这张画上改内容（戴帽子/换背景/换颜色/换姿势/加东西…）→ 用 edit_image，不要重新 generate_image。
-3. 用户纠正位置/重叠时用 move_group 移动对应颜色整组，不要只回复文字。
+3. 移动/缩放/删除画布上的「图片」→ 用 target:image，不要写 color！只有彩色几何图形才用 color 定位。
 4. 所有 x,y,size,width 必须是整数，不能 null。"""
 
 IMAGE_INSTRUCTIONS = """
 ## 文生图（从无到有画一幅新画）
 画任何具体物体/场景（猫、狗、树、房子、人、花、风景、卡通形象…）都用这个：
-- generate_image: {"action":"generate_image","prompt":"详细中文画面描述","x":{center_x},"y":{center_y},"w":480,"h":480}
-prompt 要写得具体、有画面感，由你根据用户意图扩写，例如：
-  用户「画一只猫」→ prompt:"一只可爱的橘色小猫，圆圆的大眼睛，坐着，卡通插画风格，简洁背景，色彩明亮"
-  用户「画春天的风景」→ prompt:"春天的田野风景，绿草地，盛开的花朵，蓝天白云，远处青山，水彩插画风格"
-要点：prompt 用中文(主体+特征+风格+背景，20~50字)，w/h 用 480，居中，一次通常 1 条。
+- generate_image: {"action":"generate_image","prompt":"详细中文画面描述","x":{center_x},"y":{center_y},"w":{width},"h":{height}}
+
+**背景规则（重要）**：
+- 用户只说一个主体（如「画一只小猫」「画一辆汽车」「画一朵花」），没提场景/环境 → prompt 必须写「纯白色背景，无背景，主体居中，干净简洁」，只画主体，不要自己加草地/天空等背景。
+- 用户描述了场景/环境（如「小猫在草地上玩耍」「夕阳下的海边」「夜空中的城堡」）→ 才把对应背景写进 prompt。
+
+示例：
+  「画一只小猫」→ "一只可爱的橘色小猫，圆圆的大眼睛，坐着，卡通插画风格，纯白色背景，无背景装饰，主体居中"
+  「画一只小猫在草地上玩耍」→ "一只橘色小猫在绿色草地上玩耍，蓝天白云，阳光明媚，卡通插画风格"
+  「画春天的风景」→ "春天的田野风景，绿草地，盛开的花朵，蓝天白云，远处青山，水彩插画风格"
+要点：prompt 用中文，含主体+特征+风格(+背景仅在用户提到时)，w/h 必须铺满画布（见宽高），居中，一次通常 1 条。
 
 ## 改图（画布上已有图片时，按指令修改它）
 当画布上已存在 AI 图片（看"画布现状"里有"图片"），且用户想在这幅画上修改/增删内容时，用 edit_image 而不是重新 generate_image：
@@ -101,6 +117,14 @@ def _normalize_commands(commands: list[dict[str, Any]], cw: int, ch: int) -> lis
     for c in commands:
         cmd = dict(c)
         a = cmd.get("action")
+        # 目标为图片：转 target_shape=image，清掉颜色（图片无颜色）
+        if cmd.get("target") == "image" or cmd.get("target_shape") == "image":
+            cmd["target_shape"] = "image"
+            cmd.pop("target", None)
+            cmd.pop("color", None)
+            cmd.pop("target_color", None)
+            if a == "move_group":
+                cmd["action"] = a = "move"
         # 统一 color / target_color
         if cmd.get("color") and not cmd.get("target_color"):
             cmd["target_color"] = cmd["color"]
@@ -129,7 +153,8 @@ def _normalize_commands(commands: list[dict[str, Any]], cw: int, ch: int) -> lis
             if cmd.get("size") is None:
                 cmd["size"] = 48
         elif a == "move":
-            if cmd.get("color") and not cmd.get("target_shape"):
+            # 图片移动保持 move（不转 move_group）；只有彩色几何才转整组
+            if cmd.get("color") and not cmd.get("target") and cmd.get("target_shape") != "image":
                 cmd["action"] = "move_group"
         elif a == "resize":
             if cmd.get("factor") is None and cmd.get("size") is None:
@@ -143,10 +168,16 @@ def _normalize_commands(commands: list[dict[str, Any]], cw: int, ch: int) -> lis
                 cmd["x"] = cw // 2
             if cmd.get("y") is None:
                 cmd["y"] = ch // 2
+            # 铺满画布，只留极小边距
+            margin = 8
+            full_w, full_h = cw - margin, ch - margin
             if cmd.get("w") is None:
-                cmd["w"] = min(cw, ch) - 40
+                cmd["w"] = full_w
             if cmd.get("h") is None:
-                cmd["h"] = cmd["w"]
+                cmd["h"] = full_h
+            # LLM 若给了正方形小尺寸，强制铺满画布
+            if cmd["w"] < cw * 0.85 or cmd["h"] < ch * 0.85:
+                cmd["w"], cmd["h"] = full_w, full_h
         elif a == "edit_image":
             if not cmd.get("prompt"):
                 cmd["prompt"] = (cmd.get("text") or "").strip()
@@ -291,6 +322,8 @@ def parse_with_llm(
             IMAGE_INSTRUCTIONS
             .replace("{center_x}", str(w // 2))
             .replace("{center_y}", str(h // 2))
+            .replace("{width}", str(w - 8))
+            .replace("{height}", str(h - 8))
         )
     else:
         img_block = IMAGE_INSTRUCTIONS_OFF

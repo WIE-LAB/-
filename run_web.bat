@@ -23,6 +23,11 @@ echo [2/3] 安装依赖...
 venv\Scripts\pip install -r requirements.txt -q
 
 echo [3/3] 启动 Web 服务并打开浏览器...
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do (
+    echo 关闭占用 8765 端口的旧进程 PID=%%a
+    taskkill /PID %%a /F >nul 2>&1
+)
+timeout /t 1 /nobreak >nul
 start "" "http://127.0.0.1:8765"
 venv\Scripts\python -m voice_paint.web_server
 pause

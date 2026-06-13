@@ -114,6 +114,31 @@ export class Engine {
     };
   }
 
+  /** 导出当前画布为 PNG，触发浏览器下载。 */
+  exportCanvas(filename) {
+    const prev = this.selectedId;
+    this.selectedId = null;
+    this.render();
+    try {
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+      const name = filename || `voicepaint-${stamp}.png`;
+      const dataUrl = this.canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      return true;
+    } catch (e) {
+      console.error('exportCanvas', e);
+      return false;
+    } finally {
+      this.selectedId = prev;
+      this.render();
+    }
+  }
+
   placeShape(spec) {
     const x = spec.x ?? this.W / 2;
     const y = spec.y ?? this.H / 2;
@@ -161,8 +186,8 @@ export class Engine {
   }
 
   async placeImage({ url, x, y, w, h, prompt, animate = false }) {
-    w = w ?? Math.min(this.W, this.H) - 40;
-    h = h ?? w;
+    w = w ?? this.W - 8;
+    h = h ?? this.H - 8;
     x = x ?? this.W / 2;
     y = y ?? this.H / 2;
     const shape = {
@@ -180,7 +205,6 @@ export class Engine {
     await this._loadImage(shape);
     this.shapes.push(shape);
     this.lastId = shape.id;
-    this.selectedId = shape.id;
     if (animate) {
       await this.revealImage(shape, 2400);
     }
@@ -189,25 +213,109 @@ export class Engine {
     return shape;
   }
 
-  // 像笔刷一样左右来回把图片「画」出来
   revealImage(shape, durationMs = 2400) {
     return new Promise((resolve) => {
       const start = performance.now();
       const step = (now) => {
         const t = Math.min(1, (now - start) / Math.max(60, durationMs));
-        // ease-in-out，更像运笔
         shape._reveal = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
         this.render();
-        if (t < 1) {
-          requestAnimationFrame(step);
-        } else {
-          shape._reveal = 1;
-          this.render();
-          resolve();
-        }
+        if (t < 1) requestAnimationFrame(step);
+        else { shape._reveal = 1; this.render(); resolve(); }
       };
       requestAnimationFrame(step);
     });
+  }
+
+  _loadImageEl(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('图片加载失败'));
+      img.src = url;
+    });
+  }
+
+  _animate(setT, durationMs, onTick) {
+    return new Promise((resolve) => {
+      const start = performance.now();
+      const step = (now) => {
+        const t = Math.min(1, (now - start) / Math.max(60, durationMs));
+        const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        setT(e);
+        if (onTick) onTick();
+        this.render();
+        if (t < 1) requestAnimationFrame(step);
+        else resolve();
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  // 分阶段作画：底稿 → 色块 → 成品，逐层叠加显现
+  async paintStages({ url, stages, x, y, w, h, prompt }) {
+    w = w ?? this.W - 8;
+    h = h ?? this.H - 8;
+    x = x ?? this.W / 2;
+    y = y ?? this.H / 2;
+
+    const urls = [...(stages || []), url];
+    const imgs = await Promise.all(urls.map(u => this._loadImageEl(u)));
+    const finalImg = imgs[imgs.length - 1];
+
+    const shape = {
+      id: nextId(),
+      type: 'image',
+      x, y, w, h,
+      size: Math.max(w, h),
+      color: '',
+      rotation: 0,
+      text: '',
+      url,
+      prompt: prompt || '',
+      _reveal: 1,
+      _fromImg: null,
+      _toImg: null,
+      _stageT: 0,
+    };
+    this.shapes.push(shape);
+    this.lastId = shape.id;
+
+    for (let i = 0; i < imgs.length; i++) {
+      shape._fromImg = i > 0 ? imgs[i - 1] : null;
+      shape._toImg = imgs[i];
+      shape._stageWipe = (i === 0);
+      const dur = i === 0 ? 1500 : 1300;
+      await this._animate((e) => { shape._stageT = e; }, dur);
+    }
+
+    // 收尾：定格成品，转入普通图片渲染路径
+    shape._fromImg = null;
+    shape._toImg = null;
+    this._images.set(shape.id, finalImg);
+    this.pushHistory();
+    this.render();
+    return shape;
+  }
+
+  _drawStages(ctx, s) {
+    const t = s._stageT ?? 1;
+    if (s._fromImg) this._drawImageCover(ctx, s._fromImg, s.w, s.h);
+    if (!s._toImg) return;
+    if (s._stageWipe && !s._fromImg) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(-s.w / 2, -s.h / 2, s.w * t, s.h);
+      ctx.clip();
+      this._drawImageCover(ctx, s._toImg, s.w, s.h);
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.globalAlpha = t;
+      this._drawImageCover(ctx, s._toImg, s.w, s.h);
+      ctx.restore();
+    }
   }
 
   lastImage() {
@@ -344,7 +452,15 @@ export class Engine {
       const hx = COLORS[color] || color;
       pool = pool.filter(s => s.color === hx);
     }
-    if (shape || color) return pool;
+    if (shape || color) {
+      if (pool.length) return pool;
+      // 找不到目标且画布只有图片时，回退到最近的图片（用户多半在指那张画）
+      if (this.shapes.length && this.shapes.every(s => s.type === 'image')) {
+        const img = this.lastImage();
+        if (img) return [img];
+      }
+      return pool;
+    }
     const ref = this.shapes.find(s => s.id === this.selectedId) ||
                 this.shapes.find(s => s.id === this.lastId);
     return ref ? [ref] : (this.shapes.length ? [this.shapes[this.shapes.length - 1]] : []);
@@ -452,7 +568,7 @@ export class Engine {
     if (!colorKey) return this.move(spec);
     const hx = COLORS[colorKey] || colorKey;
     const targets = this.shapes.filter(s => s.color === hx);
-    if (!targets.length) return 0;
+    if (!targets.length) return this.move(spec);
     let dx, dy;
     if (spec.position) {
       const p = this.resolvePosition(spec.position);
@@ -531,8 +647,12 @@ export class Engine {
       ctx.translate(s.x, s.y);
       ctx.rotate((s.rotation || 0) * Math.PI / 180);
       if (s.type === 'image') {
-        const img = this._images.get(s.id);
-        if (img) this._drawImageReveal(ctx, img, s);
+        if (s._toImg || s._fromImg) {
+          this._drawStages(ctx, s);
+        } else {
+          const img = this._images.get(s.id);
+          if (img) this._drawImageReveal(ctx, img, s);
+        }
       } else {
         ctx.fillStyle = s.color;
         ctx.strokeStyle = s.color;
@@ -540,8 +660,18 @@ export class Engine {
         this.drawShape(ctx, s);
       }
       ctx.restore();
-      if (s.id === this.selectedId) this.drawSelection(ctx, s);
+      // AI 图片不画选中框（纯语音场景不需要蓝框）
+      if (s.id === this.selectedId && s.type !== 'image') this.drawSelection(ctx, s);
     }
+  }
+
+  _drawImageCover(ctx, img, w, h) {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const scale = Math.max(w / iw, h / ih);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
   }
 
   _drawImageReveal(ctx, img, s) {
@@ -549,24 +679,34 @@ export class Engine {
     const left = -s.w / 2;
     const top = -s.h / 2;
     if (reveal >= 1) {
-      ctx.drawImage(img, left, top, s.w, s.h);
+      this._drawImageCover(ctx, img, s.w, s.h);
       return;
     }
-    // 横向分带，左右来回扫，模拟笔刷一笔笔画
-    const bands = 16;
-    const bandH = s.h / bands;
-    const filledBands = reveal * bands;
     ctx.save();
     ctx.beginPath();
-    for (let b = 0; b < bands; b++) {
-      const f = Math.max(0, Math.min(1, filledBands - b));
-      if (f <= 0) break;
-      const bw = s.w * f;
-      const xLeft = (b % 2 === 0) ? left : left + s.w - bw;
-      ctx.rect(xLeft, top + b * bandH, bw, bandH + 1);
+    if (s._revealMode === 'blocks') {
+      const cols = 8, rows = 8;
+      const total = cols * rows;
+      const filled = Math.floor(reveal * total);
+      const bw = s.w / cols, bh = s.h / rows;
+      for (let i = 0; i < filled; i++) {
+        const c = i % cols, r = Math.floor(i / cols);
+        ctx.rect(left + c * bw, top + r * bh, bw + 1, bh + 1);
+      }
+    } else {
+      const bands = 16;
+      const bandH = s.h / bands;
+      const filledBands = reveal * bands;
+      for (let b = 0; b < bands; b++) {
+        const f = Math.max(0, Math.min(1, filledBands - b));
+        if (f <= 0) break;
+        const bw = s.w * f;
+        const xLeft = (b % 2 === 0) ? left : left + s.w - bw;
+        ctx.rect(xLeft, top + b * bandH, bw, bandH + 1);
+      }
     }
     ctx.clip();
-    ctx.drawImage(img, left, top, s.w, s.h);
+    this._drawImageCover(ctx, img, s.w, s.h);
     ctx.restore();
   }
 
